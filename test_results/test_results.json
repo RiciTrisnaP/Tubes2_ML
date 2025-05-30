@@ -1,0 +1,74 @@
+{
+  "cnn": {
+    "cnn_filters_1": {
+      "keras_f1": 0.6970042914656577,
+      "custom_f1": 0.6970042914656577,
+      "f1_difference": 0.0,
+      "max_prediction_diff": 7.723197337217158e-07,
+      "mean_prediction_diff": 2.8269233566618595e-08,
+      "prediction_agreement": 1.0,
+      "keras_time": 0.41239285469055176,
+      "custom_time": 152.45624327659607,
+      "speedup": 0.002704991582026337
+    },
+    "cnn_filters_2": {
+      "keras_f1": 0.740425529234218,
+      "custom_f1": 0.740425529234218,
+      "f1_difference": 0.0,
+      "max_prediction_diff": 9.083274978283207e-07,
+      "mean_prediction_diff": 2.501672479917867e-08,
+      "prediction_agreement": 1.0,
+      "keras_time": 0.21723175048828125,
+      "custom_time": 314.30062437057495,
+      "speedup": 0.000691159143967067
+    }
+  },
+  "rnn": {
+    "rnn_layers_1": {
+      "keras_f1": 0.3824577022139577,
+      "custom_f1": 0.2883554585682246,
+      "f1_difference": 0.09410224364573311,
+      "max_prediction_diff": 0.1655892865257209,
+      "mean_prediction_diff": 0.05067974075259855,
+      "prediction_agreement": 0.4475,
+      "keras_time": 0.584972620010376,
+      "custom_time": 0.21146607398986816,
+      "speedup": 2.766271719020061
+    },
+    "rnn_layers_2": {
+      "keras_f1": 0.30840372536278965,
+      "custom_f1": 0.24389936481085295,
+      "f1_difference": 0.0645043605519367,
+      "max_prediction_diff": 0.09412120219348791,
+      "mean_prediction_diff": 0.021288931864486126,
+      "prediction_agreement": 0.6125,
+      "keras_time": 0.9689693450927734,
+      "custom_time": 0.4022505283355713,
+      "speedup": 2.408870285645531
+    }
+  },
+  "lstm": {
+    "lstm_layers_1": {
+      "keras_f1": 0.7341437118994056,
+      "custom_f1": 0.4600417944955761,
+      "f1_difference": 0.27410191740382955,
+      "max_prediction_diff": 0.7692600328321623,
+      "mean_prediction_diff": 0.22598562311285197,
+      "prediction_agreement": 0.6825,
+      "keras_time": 1.0752520561218262,
+      "custom_time": 1.244605541229248,
+      "speedup": 0.8639299926785172
+    },
+    "lstm_layers_2": {
+      "keras_f1": 0.7171092796092796,
+      "custom_f1": 0.5423783076402623,
+      "f1_difference": 0.17473097196901732,
+      "max_prediction_diff": 0.6772725582122803,
+      "mean_prediction_diff": 0.178460955619812,
+      "prediction_agreement": 0.585,
+      "keras_time": 2.2021331787109375,
+      "custom_time": 2.1304190158843994,
+      "speedup": 1.0336619990207736
+    }
+  }
+}

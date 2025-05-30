@@ -1,0 +1,12 @@
+Model,Experiment,F1_Score,Task
+CNN,conv_layers_2,0.6256903839817084,Image Classification (CIFAR-10)
+CNN,conv_layers_3,0.7397829836489478,Image Classification (CIFAR-10)
+CNN,conv_layers_4,0.7415096920527737,Image Classification (CIFAR-10)
+CNN,filters_variant_1,0.6965702982214883,Image Classification (CIFAR-10)
+CNN,filters_variant_2,0.7363116090010617,Image Classification (CIFAR-10)
+CNN,filters_variant_3,0.7430723949345223,Image Classification (CIFAR-10)
+CNN,kernels_variant_1,0.7473926859584837,Image Classification (CIFAR-10)
+CNN,kernels_variant_2,0.7218635379977992,Image Classification (CIFAR-10)
+CNN,kernels_variant_3,0.7338750137024943,Image Classification (CIFAR-10)
+CNN,pooling_max,0.7328275074990424,Image Classification (CIFAR-10)
+CNN,pooling_average,0.7534377656055535,Image Classification (CIFAR-10)
