@@ -1,410 +1,319 @@
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import classification_report, f1_score
+from sklearn.metrics import f1_score, classification_report
 from sklearn.preprocessing import LabelEncoder
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import (
-    Embedding, LSTM, Bidirectional, Dense, Dropout, 
-    TextVectorization
-)
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-import warnings
-warnings.filterwarnings('ignore')
+import os
+import json
+import re
 
-# Set random seed for reproducibility
-tf.random.set_seed(42)
-np.random.seed(42)
-
-class LSTMSentimentAnalyzer:
+class PretrainedLSTM:
     def __init__(self, vocab_size=10000, max_length=100, embedding_dim=128):
         self.vocab_size = vocab_size
         self.max_length = max_length
         self.embedding_dim = embedding_dim
-        self.vectorizer = None
+        self.num_classes = 3  
         self.label_encoder = LabelEncoder()
-        self.models = {}
-        self.histories = {}
+        self.text_vectorizer = None
         
-    def load_data(self, train_path, valid_path, test_path):
-        """Load and preprocess the dataset"""
-        print("Loading dataset...")
+    def load_and_preprocess_data(self):
+        train_df = pd.read_csv('../data/train.csv')
+        val_df = pd.read_csv('../data/valid.csv')
+        test_df = pd.read_csv('../data/test.csv')
         
-        # Load CSV files
-        self.train_df = pd.read_csv(train_path)
-        self.valid_df = pd.read_csv(valid_path)
-        self.test_df = pd.read_csv(test_path)
+        print(f"Train samples: {len(train_df)}")
+        print(f"Validation samples: {len(val_df)}")
+        print(f"Test samples: {len(test_df)}")
         
-        print(f"Train data shape: {self.train_df.shape}")
-        print(f"Validation data shape: {self.valid_df.shape}")
-        print(f"Test data shape: {self.test_df.shape}")
+        def preprocess_text(text):
+            if pd.isna(text):
+                return ""
+            text = str(text).lower()
+            text = re.sub(r'\s+', ' ', text)
+            text = text.strip()
+            return text
         
-        # Display basic info about the dataset
-        print(f"\nSentiment distribution in training data:")
-        print(self.train_df['label'].value_counts())
+        train_texts = [preprocess_text(text) for text in train_df['text']]
+        val_texts = [preprocess_text(text) for text in val_df['text']]
+        test_texts = [preprocess_text(text) for text in test_df['text']]
         
-        return self.train_df, self.valid_df, self.test_df
-    
-    def setup_text_vectorization(self):
-        """Setup TextVectorization layer for tokenization"""
-        print("Setting up text vectorization...")
+        all_labels = pd.concat([train_df['label'], val_df['label'], test_df['label']])
+        self.label_encoder.fit(all_labels)
         
-        # Create TextVectorization layer
-        self.vectorizer = TextVectorization(
+        train_labels = self.label_encoder.transform(train_df['label'])
+        val_labels = self.label_encoder.transform(val_df['label'])
+        test_labels = self.label_encoder.transform(test_df['label'])
+        
+        print(f"Label classes: {self.label_encoder.classes_}")
+        print(f"Label distribution in train: {np.bincount(train_labels)}")
+        
+        self.text_vectorizer = layers.TextVectorization(
             max_tokens=self.vocab_size,
             output_sequence_length=self.max_length,
             output_mode='int'
         )
         
-        # Adapt the vectorizer on training data
-        text_data = self.train_df['text'].values
-        self.vectorizer.adapt(text_data)
+        self.text_vectorizer.adapt(train_texts)
+
+        train_sequences = self.text_vectorizer(train_texts)
+        val_sequences = self.text_vectorizer(val_texts)
+        test_sequences = self.text_vectorizer(test_texts)
         
-        print(f"Vocabulary size: {len(self.vectorizer.get_vocabulary())}")
-        
-    def preprocess_data(self):
-        """Preprocess text data and encode labels"""
-        print("Preprocessing data...")
-        
-        # Vectorize text data
-        X_train = self.vectorizer(self.train_df['text'].values)
-        X_valid = self.vectorizer(self.valid_df['text'].values)
-        X_test = self.vectorizer(self.test_df['text'].values)
-        
-        # Encode labels
-        y_train = self.label_encoder.fit_transform(self.train_df['label'])
-        y_valid = self.label_encoder.transform(self.valid_df['label'])
-        y_test = self.label_encoder.transform(self.test_df['label'])
-        
-        self.num_classes = len(self.label_encoder.classes_)
-        print(f"Number of classes: {self.num_classes}")
-        print(f"Classes: {self.label_encoder.classes_}")
-        
-        return (X_train, y_train), (X_valid, y_valid), (X_test, y_test)
+        return (train_sequences, train_labels), (val_sequences, val_labels), (test_sequences, test_labels)
     
-    def create_lstm_model(self, num_layers=1, units_per_layer=[128], 
-                         use_bidirectional=True, dropout_rate=0.3):
-        """Create LSTM model with specified architecture"""
-        model = Sequential()
+    def create_model_variant(self, lstm_layers=2, units_per_layer=[64, 32], 
+                           bidirectional=True, dropout_rate=0.5):
         
-        # Embedding layer
-        model.add(Embedding(
+        model = keras.Sequential()
+        
+        model.add(layers.Embedding(
             input_dim=self.vocab_size,
             output_dim=self.embedding_dim,
-            input_length=self.max_length
+            mask_zero=True
         ))
         
-        # LSTM layers
-        for i, units in enumerate(units_per_layer):
-            # Return sequences for all LSTM layers except the last one
-            return_sequences = (i < len(units_per_layer) - 1) or (len(units_per_layer) == 1 and num_layers > 1)
+        for i in range(lstm_layers):
+            units = units_per_layer[i] if i < len(units_per_layer) else units_per_layer[-1]
+            return_sequences = i < lstm_layers - 1 
             
-            if use_bidirectional:
-                model.add(Bidirectional(LSTM(
-                    units, 
-                    return_sequences=return_sequences,
-                    dropout=dropout_rate,
-                    recurrent_dropout=dropout_rate
-                )))
-            else:
-                model.add(LSTM(
-                    units, 
-                    return_sequences=return_sequences,
-                    dropout=dropout_rate,
-                    recurrent_dropout=dropout_rate
-                ))
+            lstm_layer = layers.LSTM(
+                units=units,
+                return_sequences=return_sequences,
+                dropout=dropout_rate,
+                recurrent_dropout=dropout_rate
+            )
             
-            # Add dropout layer after each LSTM layer
-            model.add(Dropout(dropout_rate))
+            if bidirectional:
+                lstm_layer = layers.Bidirectional(lstm_layer)
+            
+            model.add(lstm_layer)
+
+        model.add(layers.Dropout(dropout_rate))
+        model.add(layers.Dense(self.num_classes, activation='softmax'))
         
-        # Dense output layer
-        model.add(Dense(64, activation='relu'))
-        model.add(Dropout(dropout_rate))
-        model.add(Dense(self.num_classes, activation='softmax'))
-        
-        # Compile model
+        return model
+    
+    def compile_model(self, model):
         model.compile(
             optimizer='adam',
             loss='sparse_categorical_crossentropy',
             metrics=['accuracy']
         )
-        
         return model
     
-    def train_model(self, model, X_train, y_train, X_valid, y_valid, 
-                   model_name, epochs=50, batch_size=32):
-        """Train the model with early stopping"""
-        print(f"\nTraining model: {model_name}")
-        print(f"Model architecture:")
-        model.summary()
+    def train_model(self, model, x_train, y_train, x_val, y_val, epochs=50, batch_size=32):
+        callbacks = [
+            keras.callbacks.EarlyStopping(patience=10, restore_best_weights=True),
+            keras.callbacks.ReduceLROnPlateau(factor=0.5, patience=5)
+        ]
         
-        # Callbacks
-        early_stopping = EarlyStopping(
-            monitor='val_loss',
-            patience=5,
-            restore_best_weights=True
-        )
-        
-        model_checkpoint = ModelCheckpoint(
-            f'best_model_{model_name}.h5',
-            monitor='val_loss',
-            save_best_only=True
-        )
-        
-        # Train model
         history = model.fit(
-            X_train, y_train,
-            validation_data=(X_valid, y_valid),
-            epochs=epochs,
+            x_train, y_train,
             batch_size=batch_size,
-            callbacks=[early_stopping, model_checkpoint],
+            epochs=epochs,
+            validation_data=(x_val, y_val),
+            callbacks=callbacks,
             verbose=1
         )
         
-        self.models[model_name] = model
-        self.histories[model_name] = history
-        
-        return model, history
+        return history
     
-    def evaluate_model(self, model, X_test, y_test, model_name):
-        """Evaluate model and calculate metrics"""
-        print(f"\nEvaluating model: {model_name}")
+    def evaluate_model(self, model, x_test, y_test):
+        y_pred = model.predict(x_test)
+        y_pred_classes = np.argmax(y_pred, axis=1)
+
+        f1_macro = f1_score(y_test, y_pred_classes, average='macro')
+        report = classification_report(y_test, y_pred_classes, 
+                                     target_names=self.label_encoder.classes_)
         
-        # Predictions
-        y_pred_proba = model.predict(X_test)
-        y_pred = np.argmax(y_pred_proba, axis=1)
-        
-        # Calculate metrics
-        test_loss, test_accuracy = model.evaluate(X_test, y_test, verbose=0)
-        macro_f1 = f1_score(y_test, y_pred, average='macro')
-        
-        print(f"Test Loss: {test_loss:.4f}")
-        print(f"Test Accuracy: {test_accuracy:.4f}")
-        print(f"Macro F1-Score: {macro_f1:.4f}")
-        
-        # Classification report
-        print(f"\nClassification Report for {model_name}:")
-        print(classification_report(
-            y_test, y_pred, 
-            target_names=self.label_encoder.classes_
-        ))
-        
-        return {
-            'test_loss': test_loss,
-            'test_accuracy': test_accuracy,
-            'macro_f1': macro_f1,
-            'predictions': y_pred
-        }
+        return f1_macro, report, y_pred_classes
     
-    def plot_training_history(self, model_names, figsize=(15, 10)):
-        """Plot training and validation loss/accuracy"""
-        fig, axes = plt.subplots(2, 2, figsize=figsize)
+    def run_experiments(self):
+        (x_train, y_train), (x_val, y_val), (x_test, y_test) = self.load_and_preprocess_data()
         
-        # Plot training loss
-        axes[0, 0].set_title('Training Loss')
-        for name in model_names:
-            if name in self.histories:
-                axes[0, 0].plot(self.histories[name].history['loss'], label=name)
-        axes[0, 0].set_xlabel('Epoch')
-        axes[0, 0].set_ylabel('Loss')
-        axes[0, 0].legend()
-        axes[0, 0].grid(True)
+        results = {}
         
-        # Plot validation loss
-        axes[0, 1].set_title('Validation Loss')
-        for name in model_names:
-            if name in self.histories:
-                axes[0, 1].plot(self.histories[name].history['val_loss'], label=name)
-        axes[0, 1].set_xlabel('Epoch')
-        axes[0, 1].set_ylabel('Loss')
-        axes[0, 1].legend()
-        axes[0, 1].grid(True)
+        print("Starting LSTM Experiments...")
+
+        print("\n=== Experiment 1: Number of LSTM Layers ===")
+        layer_variants = [1, 2, 3]
         
-        # Plot training accuracy
-        axes[1, 0].set_title('Training Accuracy')
-        for name in model_names:
-            if name in self.histories:
-                axes[1, 0].plot(self.histories[name].history['accuracy'], label=name)
-        axes[1, 0].set_xlabel('Epoch')
-        axes[1, 0].set_ylabel('Accuracy')
-        axes[1, 0].legend()
-        axes[1, 0].grid(True)
+        for layers_count in layer_variants:
+            print(f"\nTraining LSTM with {layers_count} layers...")
+            
+            units_per_layer = [64] * layers_count
+            
+            model = self.create_model_variant(
+                lstm_layers=layers_count,
+                units_per_layer=units_per_layer,
+                bidirectional=True,
+                dropout_rate=0.5
+            )
+            model = self.compile_model(model)
+            
+            print(model.summary())
+            
+            history = self.train_model(model, x_train, y_train, x_val, y_val, epochs=30)
+            f1_macro, report, y_pred = self.evaluate_model(model, x_test, y_test)
+            
+            model_path = f'models/lstm_layers_{layers_count}.h5'
+            os.makedirs('models', exist_ok=True)
+            model.save(model_path)
+            
+            results[f'lstm_layers_{layers_count}'] = {
+                'f1_macro': f1_macro,
+                'history': history.history,
+                'model_path': model_path,
+                'report': report
+            }
+            
+            print(f"Macro F1-Score: {f1_macro:.4f}")
         
-        # Plot validation accuracy
-        axes[1, 1].set_title('Validation Accuracy')
-        for name in model_names:
-            if name in self.histories:
-                axes[1, 1].plot(self.histories[name].history['val_accuracy'], label=name)
-        axes[1, 1].set_xlabel('Epoch')
-        axes[1, 1].set_ylabel('Accuracy')
-        axes[1, 1].legend()
-        axes[1, 1].grid(True)
+        print("\n=== Experiment 2: Number of Units per Layer ===")
+        units_variants = [
+            [32, 16],
+            [64, 32],
+            [128, 64]
+        ]
+        
+        for i, units in enumerate(units_variants):
+            print(f"\nTraining LSTM with units {units}...")
+            
+            model = self.create_model_variant(
+                lstm_layers=2,
+                units_per_layer=units,
+                bidirectional=True,
+                dropout_rate=0.5
+            )
+            model = self.compile_model(model)
+            
+            history = self.train_model(model, x_train, y_train, x_val, y_val, epochs=30)
+            f1_macro, report, y_pred = self.evaluate_model(model, x_test, y_test)
+            
+            model_path = f'models/lstm_units_{i+1}.h5'
+            model.save(model_path)
+            
+            results[f'units_variant_{i+1}'] = {
+                'units': units,
+                'f1_macro': f1_macro,
+                'history': history.history,
+                'model_path': model_path,
+                'report': report
+            }
+            
+            print(f"Units {units} - Macro F1-Score: {f1_macro:.4f}")
+
+        print("\n=== Experiment 3: LSTM Direction ===")
+        direction_variants = [False, True] 
+        direction_names = ['Unidirectional', 'Bidirectional']
+        
+        for bidirectional, name in zip(direction_variants, direction_names):
+            print(f"\nTraining {name} LSTM...")
+            
+            model = self.create_model_variant(
+                lstm_layers=2,
+                units_per_layer=[64, 32],
+                bidirectional=bidirectional,
+                dropout_rate=0.5
+            )
+            model = self.compile_model(model)
+            
+            history = self.train_model(model, x_train, y_train, x_val, y_val, epochs=30)
+            f1_macro, report, y_pred = self.evaluate_model(model, x_test, y_test)
+            
+            model_path = f'models/lstm_direction_{name.lower()}.h5'
+            model.save(model_path)
+            
+            results[f'direction_{name.lower()}'] = {
+                'f1_macro': f1_macro,
+                'history': history.history,
+                'model_path': model_path,
+                'report': report
+            }
+            
+            print(f"{name} LSTM - Macro F1-Score: {f1_macro:.4f}")
+        
+        with open('lstm_results.json', 'w') as f:
+            json_results = {}
+            for key, value in results.items():
+                json_results[key] = {
+                    k: (v.tolist() if isinstance(v, np.ndarray) else v) 
+                    for k, v in value.items() if k != 'report'
+                }
+            json.dump(json_results, f, indent=2)
+        
+        return results
+    
+    def plot_training_curves(self, results):
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        fig.suptitle('LSTM Training Curves Comparison')
+
+        ax = axes[0]
+        for layers_count in [1, 2, 3]:
+            key = f'lstm_layers_{layers_count}'
+            if key in results:
+                history = results[key]['history']
+                ax.plot(history['loss'], label=f'{layers_count} layers (train)')
+                ax.plot(history['val_loss'], '--', label=f'{layers_count} layers (val)')
+        ax.set_title('Effect of Number of Layers')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
+        ax.legend()
+        
+        ax = axes[1]
+        for i in range(1, 4):
+            key = f'units_variant_{i}'
+            if key in results:
+                history = results[key]['history']
+                units = results[key]['units']
+                ax.plot(history['loss'], label=f'Units {units} (train)')
+                ax.plot(history['val_loss'], '--', label=f'Units {units} (val)')
+        ax.set_title('Effect of Number of Units')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
+        ax.legend()
+        
+        ax = axes[2]
+        for direction in ['unidirectional', 'bidirectional']:
+            key = f'direction_{direction}'
+            if key in results:
+                history = results[key]['history']
+                ax.plot(history['loss'], label=f'{direction} (train)')
+                ax.plot(history['val_loss'], '--', label=f'{direction} (val)')
+        ax.set_title('Effect of Direction')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
+        ax.legend()
         
         plt.tight_layout()
+        plt.savefig('lstm_training_curves.png', dpi=300, bbox_inches='tight')
         plt.show()
-    
-    def compare_models(self, results_dict):
-        """Compare model performance"""
-        print("\n" + "="*60)
-        print("MODEL COMPARISON RESULTS")
-        print("="*60)
         
-        comparison_df = pd.DataFrame({
-            'Model': list(results_dict.keys()),
-            'Test Accuracy': [results_dict[model]['test_accuracy'] for model in results_dict.keys()],
-            'Macro F1-Score': [results_dict[model]['macro_f1'] for model in results_dict.keys()],
-            'Test Loss': [results_dict[model]['test_loss'] for model in results_dict.keys()]
-        })
-        
-        print(comparison_df.round(4))
-        
-        # Best model based on macro F1-score
-        best_model = comparison_df.loc[comparison_df['Macro F1-Score'].idxmax(), 'Model']
-        print(f"\nBest model based on Macro F1-Score: {best_model}")
-        
-        return comparison_df
-
-def main():
-    # Initialize analyzer
-    analyzer = LSTMSentimentAnalyzer(vocab_size=10000, max_length=100, embedding_dim=128)
+        return fig
     
-    # Load data (adjust paths as needed)
-    train_df, valid_df, test_df = analyzer.load_data('src/data/train.csv', 'src/data/valid.csv', 'src/data/test.csv')
-    
-    # Setup text vectorization
-    analyzer.setup_text_vectorization()
-    
-    # Preprocess data
-    (X_train, y_train), (X_valid, y_valid), (X_test, y_test) = analyzer.preprocess_data()
-    
-    results = {}
-    
-    print("\n" + "="*60)
-    print("EXPERIMENT 1: PENGARUH JUMLAH LAYER LSTM")
-    print("="*60)
-    
-    # Experiment 1: Effect of number of LSTM layers
-    layer_configs = [
-        {"name": "1_layer", "units": [128], "description": "1 LSTM Layer"},
-        {"name": "2_layers", "units": [128, 64], "description": "2 LSTM Layers"},
-        {"name": "3_layers", "units": [128, 64, 32], "description": "3 LSTM Layers"}
-    ]
-    
-    layer_results = {}
-    for config in layer_configs:
-        model = analyzer.create_lstm_model(
-            num_layers=len(config["units"]),
-            units_per_layer=config["units"],
-            use_bidirectional=True,
-            dropout_rate=0.3
-        )
-        
-        model, history = analyzer.train_model(
-            model, X_train, y_train, X_valid, y_valid,
-            config["name"], epochs=30
-        )
-        
-        result = analyzer.evaluate_model(model, X_test, y_test, config["name"])
-        layer_results[config["description"]] = result
-    
-    # Plot comparison for layer experiment
-    analyzer.plot_training_history([config["name"] for config in layer_configs])
-    layer_comparison = analyzer.compare_models(layer_results)
-    
-    print("\n" + "="*60)
-    print("EXPERIMENT 2: PENGARUH BANYAK CELL LSTM PER LAYER")
-    print("="*60)
-    
-    # Experiment 2: Effect of number of LSTM cells per layer
-    cell_configs = [
-        {"name": "small_cells", "units": [64], "description": "64 cells"},
-        {"name": "medium_cells", "units": [128], "description": "128 cells"},
-        {"name": "large_cells", "units": [256], "description": "256 cells"}
-    ]
-    
-    cell_results = {}
-    for config in cell_configs:
-        model = analyzer.create_lstm_model(
-            num_layers=1,
-            units_per_layer=config["units"],
-            use_bidirectional=True,
-            dropout_rate=0.3
-        )
-        
-        model, history = analyzer.train_model(
-            model, X_train, y_train, X_valid, y_valid,
-            config["name"], epochs=30
-        )
-        
-        result = analyzer.evaluate_model(model, X_test, y_test, config["name"])
-        cell_results[config["description"]] = result
-    
-    # Plot comparison for cell experiment
-    analyzer.plot_training_history([config["name"] for config in cell_configs])
-    cell_comparison = analyzer.compare_models(cell_results)
-    
-    print("\n" + "="*60)
-    print("EXPERIMENT 3: PENGARUH JENIS LAYER LSTM (BIDIRECTIONAL VS UNIDIRECTIONAL)")
-    print("="*60)
-    
-    # Experiment 3: Effect of LSTM direction
-    direction_configs = [
-        {"name": "unidirectional", "bidirectional": False, "description": "Unidirectional LSTM"},
-        {"name": "bidirectional", "bidirectional": True, "description": "Bidirectional LSTM"}
-    ]
-    
-    direction_results = {}
-    for config in direction_configs:
-        model = analyzer.create_lstm_model(
-            num_layers=1,
-            units_per_layer=[128],
-            use_bidirectional=config["bidirectional"],
-            dropout_rate=0.3
-        )
-        
-        model, history = analyzer.train_model(
-            model, X_train, y_train, X_valid, y_valid,
-            config["name"], epochs=30
-        )
-        
-        result = analyzer.evaluate_model(model, X_test, y_test, config["name"])
-        direction_results[config["description"]] = result
-    
-    # Plot comparison for direction experiment
-    analyzer.plot_training_history([config["name"] for config in direction_configs])
-    direction_comparison = analyzer.compare_models(direction_results)
-    
-    # Final summary
-    print("\n" + "="*80)
-    print("KESIMPULAN ANALISIS")
-    print("="*80)
-    
-    print("\n1. PENGARUH JUMLAH LAYER LSTM:")
-    best_layers = layer_comparison.loc[layer_comparison['Macro F1-Score'].idxmax(), 'Model']
-    print(f"   - Model terbaik: {best_layers}")
-    print("   - Analisis: Menambah layer LSTM dapat meningkatkan kemampuan model untuk")
-    print("     menangkap pola yang lebih kompleks, namun juga meningkatkan risiko overfitting.")
-    
-    print("\n2. PENGARUH BANYAK CELL LSTM PER LAYER:")
-    best_cells = cell_comparison.loc[cell_comparison['Macro F1-Score'].idxmax(), 'Model']
-    print(f"   - Model terbaik: {best_cells}")
-    print("   - Analisis: Jumlah cell yang lebih banyak memberikan kapasitas model yang lebih besar")
-    print("     untuk mempelajari representasi yang kompleks, namun perlu diseimbangkan dengan")
-    print("     risiko overfitting dan computational cost.")
-    
-    print("\n3. PENGARUH JENIS LAYER LSTM (BIDIRECTIONAL VS UNIDIRECTIONAL):")
-    best_direction = direction_comparison.loc[direction_comparison['Macro F1-Score'].idxmax(), 'Model']
-    print(f"   - Model terbaik: {best_direction}")
-    print("   - Analisis: Bidirectional LSTM umumnya memberikan performa yang lebih baik")
-    print("     karena dapat memproses informasi dari kedua arah (forward dan backward),")
-    print("     memberikan konteks yang lebih lengkap untuk prediksi.")
-    
-    # Save best model weights
-    print(f"\nModel weights telah disimpan sebagai file .h5 untuk setiap konfigurasi yang diuji.")
-    
-    return analyzer, layer_comparison, cell_comparison, direction_comparison
+    def save_vectorizer(self):
+        if self.text_vectorizer is not None:
+            vocab = self.text_vectorizer.get_vocabulary()
+            with open('text_vectorizer_vocab_lstm.json', 'w') as f:
+                json.dump(vocab, f, ensure_ascii=False, indent=2)
+            
+            config = {
+                'vocab_size': self.vocab_size,
+                'max_length': self.max_length,
+                'embedding_dim': self.embedding_dim
+            }
+            with open('text_vectorizer_config_lstm.json', 'w') as f:
+                json.dump(config, f, indent=2)
 
 if __name__ == "__main__":
-    analyzer, layer_comp, cell_comp, direction_comp = main()
+    lstm = PretrainedLSTM()
+    results = lstm.run_experiments()
+    lstm.plot_training_curves(results)
+    lstm.save_vectorizer()
+    
+    print("\n=== LSTM Experiments Summary ===")
+    for exp_name, exp_results in results.items():
+        print(f"{exp_name}: F1-Score = {exp_results['f1_macro']:.4f}")
