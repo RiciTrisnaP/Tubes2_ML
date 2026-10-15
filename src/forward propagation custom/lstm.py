@@ -146,7 +146,8 @@ class CustomLSTM:
     
     def lstm_forward(self, input_sequences: np.ndarray, kernel: np.ndarray,
                     recurrent_kernel: np.ndarray, bias: np.ndarray = None,
-                    units: int = None, return_sequences: bool = False) -> np.ndarray:
+                    units: int = None, return_sequences: bool = False,
+                    mask: np.ndarray = None) -> np.ndarray:
         
         batch_size, sequence_length, _ = input_sequences.shape
 
@@ -161,9 +162,16 @@ class CustomLSTM:
 
         for t in range(sequence_length):
             input_t = input_sequences[:, t, :] 
-            hidden, cell = self.lstm_cell_forward(
+            new_hidden, new_cell = self.lstm_cell_forward(
                 input_t, hidden, cell, kernel, recurrent_kernel, bias, units
             )
+            if mask is not None:
+                # Padding steps (token 0) are skipped: keep the previous state, as Keras does
+                m = mask[:, t:t+1]
+                hidden = np.where(m, new_hidden, hidden)
+                cell = np.where(m, new_cell, cell)
+            else:
+                hidden, cell = new_hidden, new_cell
             
             if return_sequences:
                 all_hidden[:, t, :] = hidden
@@ -175,7 +183,8 @@ class CustomLSTM:
     
     def bidirectional_lstm_forward(self, input_sequences: np.ndarray,
                                   forward_weights: Dict, backward_weights: Dict,
-                                  return_sequences: bool = False) -> np.ndarray:
+                                  return_sequences: bool = False,
+                                  mask: np.ndarray = None) -> np.ndarray:
         
         forward_output = self.lstm_forward(
             input_sequences,
@@ -183,7 +192,8 @@ class CustomLSTM:
             forward_weights['recurrent_kernel'],
             forward_weights['bias'],
             forward_weights['units'],
-            return_sequences=return_sequences
+            return_sequences=return_sequences,
+            mask=mask
         )
 
         reversed_sequences = input_sequences[:, ::-1, :] 
@@ -193,7 +203,8 @@ class CustomLSTM:
             backward_weights['recurrent_kernel'],
             backward_weights['bias'],
             backward_weights['units'],
-            return_sequences=return_sequences
+            return_sequences=return_sequences,
+            mask=None if mask is None else mask[:, ::-1]
         )
         
         if return_sequences:
@@ -224,6 +235,7 @@ class CustomLSTM:
             raise ValueError("No model loaded. Please load a model first.")
         
         x = input_sequences.copy().astype(np.int32)
+        mask = None
         embedding_idx = 0
         lstm_idx = 0
         dense_idx = 0
@@ -239,6 +251,8 @@ class CustomLSTM:
             if layer_type == 'Embedding':
                 weights = self.weights[f'embedding_{embedding_idx}']
                 embeddings = weights['embeddings']
+                if config.get('mask_zero', False):
+                    mask = x != 0
 
                 x = self.embedding_forward(x, embeddings)
                 embedding_idx += 1
@@ -252,8 +266,8 @@ class CustomLSTM:
                 
                 return_sequences = config.get('return_sequences', False)
 
-                x = self.lstm_forward(x, kernel, recurrent_kernel, bias, units, 
-                                    return_sequences)
+                x = self.lstm_forward(x, kernel, recurrent_kernel, bias, units,
+                                    return_sequences, mask=mask)
                 lstm_idx += 1
                 
             elif layer_type == 'Bidirectional':
@@ -265,7 +279,7 @@ class CustomLSTM:
                 return_sequences = wrapped_layer.get('config', {}).get('return_sequences', False)
 
                 x = self.bidirectional_lstm_forward(x, forward_weights, backward_weights,
-                                                  return_sequences)
+                                                  return_sequences, mask=mask)
                 lstm_idx += 1
                 
             elif layer_type == 'Dense':
